@@ -1,0 +1,236 @@
+-- Load WindUI Library
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+-- Local Variables
+local Players = game:GetService("Players")
+local LocalPlayer = Players.LocalPlayer
+local RunService = game:GetService("RunService")
+
+local showPlayersEnabled = false
+local lookAtEnabled = false
+local autoDodgeEnabled = false
+local activeBeams = {}
+
+-- Dodge Variables
+local dodgeVelocity = nil
+local dodgeAttachment = nil
+
+-- Initialize Window
+local Window = WindUI:CreateWindow({
+    Title = "Blind Shot",
+    Icon = "target",
+    Author = "by MetalZ",
+    Size = UDim2.fromOffset(380, 360),
+    Transparent = true,
+    Theme = "Light"
+})
+
+-- Create the Main Tab
+local MainTab = Window:Tab({
+    Title = "Main",
+    Icon = "terminal"
+})
+
+-- Helper function to find closest player
+local function getClosestPlayer()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then return nil end
+
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local pos = player.Character.HumanoidRootPart.Position
+            local distance = (LocalPlayer.Character.HumanoidRootPart.Position - pos).Magnitude
+            
+            if distance < shortestDistance then
+                closestPlayer = player
+                shortestDistance = distance
+            end
+        end
+    end
+    return closestPlayer
+end
+
+-- Function to handle the visual beam path
+local function updateBeam(playerId, p1, p2)
+    local beamPart = activeBeams[playerId]
+    
+    if not beamPart or not beamPart.Parent then
+        beamPart = Instance.new("Part")
+        beamPart.Name = "Pneum_Visual"
+        beamPart.Anchored = true
+        beamPart.CanCollide = false
+        beamPart.CanQuery = false
+        beamPart.Color = Color3.fromRGB(255, 0, 0)
+        beamPart.Material = Enum.Material.Neon
+        beamPart.Transparency = 0.5
+        beamPart.Parent = workspace
+        activeBeams[playerId] = beamPart
+    end
+    
+    local offset = Vector3.new(0, 0.05, 0)
+    local startPos = p1.Position - offset
+    local endPos = p2.Position - offset
+    local midPoint = startPos:Lerp(endPos, 0.5)
+    
+    beamPart.Size = Vector3.new(0.08, 0.08, (startPos - endPos).Magnitude)
+    beamPart.CFrame = CFrame.new(midPoint, endPos)
+    
+    return beamPart
+end
+
+-- Toggle: Auto Dodge
+MainTab:Toggle({
+    Title = "Auto Dodge",
+    Desc = "Dodge the lasers (not recommended for tight spaces)",
+    Value = false,
+    Callback = function(state)
+        autoDodgeEnabled = state
+        if not state and dodgeVelocity then
+            dodgeVelocity.Enabled = false
+        end
+    end
+})
+
+-- Toggle: Look At Closest
+MainTab:Toggle({
+    Title = "Look At Closest",
+    Desc = "Lock on closest",
+    Value = false,
+    Callback = function(state)
+        lookAtEnabled = state
+    end
+})
+
+-- Toggle: Show All Players
+MainTab:Toggle({
+    Title = "Show All Players",
+    Desc = "Show all players beam and theirselves.",
+    Value = false,
+    Callback = function(state)
+        showPlayersEnabled = state
+        if not state then
+            for _, beam in pairs(activeBeams) do if beam then beam:Destroy() end end
+            table.clear(activeBeams)
+        end
+    end
+})
+
+-- Setup Dodge Velocity (Physics-based movement)
+local function setupDodge()
+    if not LocalPlayer.Character then return end
+    local root = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    
+    if not dodgeAttachment or dodgeAttachment.Parent ~= root then
+        dodgeAttachment = Instance.new("Attachment", root)
+    end
+    
+    if not dodgeVelocity or dodgeVelocity.Parent ~= root then
+        dodgeVelocity = Instance.new("LinearVelocity")
+        dodgeVelocity.MaxForce = 100000
+        dodgeVelocity.VelocityConstraintMode = Enum.VelocityConstraintMode.Vector
+        dodgeVelocity.VectorVelocity = Vector3.zero
+        dodgeVelocity.Attachment0 = dodgeAttachment
+        dodgeVelocity.Enabled = false 
+        dodgeVelocity.Parent = root
+    end
+end
+
+-- Main Render Loop
+RunService.RenderStepped:Connect(function()
+    setupDodge()
+    local updatedBeams = {}
+    local myRoot = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    local shouldDodge = false
+    local dodgeDir = Vector3.zero
+
+    -- Look At Logic
+    if lookAtEnabled and myRoot then
+        local target = getClosestPlayer()
+        if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
+            local targetPos = target.Character.HumanoidRootPart.Position
+            myRoot.CFrame = CFrame.new(myRoot.Position, Vector3.new(targetPos.X, myRoot.Position.Y, targetPos.Z))
+        end
+    end
+
+    -- Process Players and Detect Beam Proximity
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local char = player.Character
+            local hum = char:FindFirstChildOfClass("Humanoid")
+            
+            if hum and hum.Health > 0 then
+                local skinModel = nil
+                for _, child in ipairs(char:GetChildren()) do
+                    if child:IsA("Model") and string.find(child.Name, "Skin_") then
+                        skinModel = child
+                        break
+                    end
+                end
+
+                if skinModel then
+                    local p1 = skinModel:FindFirstChild("Part")
+                    local p2 = skinModel:FindFirstChild("TargetPart")
+                    
+                    if p1 and p2 then
+                        local beam = updateBeam(player.UserId, p1, p2)
+                        updatedBeams[player.UserId] = true
+                        
+                        -- Dodge detection math
+                        if autoDodgeEnabled and myRoot then
+                            local beamDir = (p2.Position - p1.Position).Unit
+                            local playerToStart = myRoot.Position - p1.Position
+                            local projection = playerToStart:Dot(beamDir)
+                            local closestPointOnBeam = p1.Position + (beamDir * math.clamp(projection, 0, (p2.Position - p1.Position).Magnitude))
+                            
+                            local distToBeam = (myRoot.Position - closestPointOnBeam).Magnitude
+                            
+                            if distToBeam < 4 then
+                                shouldDodge = true
+                                local rawDir = (myRoot.Position - closestPointOnBeam).Unit
+                                dodgeDir = Vector3.new(rawDir.X, 0, rawDir.Z).Unit * 20
+                            end
+                        end
+                    end
+                end
+
+                -- Visibility Overrides
+                if showPlayersEnabled then
+                    for _, obj in ipairs(char:GetDescendants()) do
+                        if obj:IsA("BasePart") then
+                            local n = string.lower(obj.Name)
+                            if n == "targetpart" or n == "hitbox" or n == "humanoidrootpart" then
+                                obj.Transparency = 1
+                            else
+                                obj.Transparency = 0
+                            end
+                        elseif obj:IsA("Decal") then
+                            obj.Transparency = 0
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    -- Update Velocity state
+    if autoDodgeEnabled and dodgeVelocity then
+        if shouldDodge then
+            dodgeVelocity.Enabled = true
+            dodgeVelocity.VectorVelocity = dodgeDir
+        else
+            dodgeVelocity.Enabled = false
+            dodgeVelocity.VectorVelocity = Vector3.zero
+        end
+    end
+
+    -- Cleanup old visual beams
+    for id, beam in pairs(activeBeams) do
+        if not updatedBeams[id] then
+            if beam then beam:Destroy() end
+            activeBeams[id] = nil
+        end
+    end
+end)
+
